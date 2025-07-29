@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unified Password Recovery Tool</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-12">
+                <nav class="navbar navbar-dark bg-dark">
+                    <div class="container-fluid">
+                        <span class="navbar-brand mb-0 h1">
+                            <i class="fas fa-unlock-alt"></i> Unified Password Recovery Tool
+                        </span>
+                    </div>
+                </nav>
+            </div>
+        </div>
+
+        <div class="row mt-4">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-upload"></i> File Upload & Analysis</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label">Select Recovery Type:</label>
+                            <div class="btn-group w-100" role="group">
+                                <input type="radio" class="btn-check" name="recovery_type" id="veracrypt_type" value="veracrypt" checked>
+                                <label class="btn btn-outline-primary" for="veracrypt_type">
+                                    <i class="fas fa-hdd"></i> VeraCrypt
+                                </label>
+                                <input type="radio" class="btn-check" name="recovery_type" id="keepass_type" value="keepass">
+                                <label class="btn btn-outline-primary" for="keepass_type">
+                                    <i class="fas fa-key"></i> KeePass
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- VeraCrypt Options -->
+                        <div id="veracrypt_options">
+                            <div class="mb-3">
+                                <label for="hash_data" class="form-label">VeraCrypt Hash Data (hex or base64):</label>
+                                <textarea class="form-control" id="hash_data" rows="4" placeholder="Enter hash data here..."></textarea>
+                            </div>
+                            <div class="mb-3">
+                                <label for="partition_data" class="form-label">Partition Data (first 512 bytes, optional):</label>
+                                <textarea class="form-control" id="partition_data" rows="3" placeholder="Enter partition data here..."></textarea>
+                            </div>
+                            <div class="text-center mb-3">
+                                <strong>OR</strong>
+                            </div>
+                        </div>
+
+                        <!-- File Upload -->
+                        <div class="mb-3">
+                            <label for="file_upload" class="form-label">Upload File:</label>
+                            <input type="file" class="form-control" id="file_upload" accept=".kdbx,.tc,.hc">
+                            <div class="form-text">
+                                <span id="veracrypt_help">Supported: VeraCrypt containers (.tc, .hc) or hash files</span>
+                                <span id="keepass_help" style="display:none;">Supported: KeePass databases (.kdbx)</span>
+                            </div>
+                        </div>
+
+                        <button type="button" class="btn btn-primary w-100" id="upload_btn">
+                            <i class="fas fa-upload"></i> Analyze File
+                        </button>
+                    </div>
+                </div>
+
+                <!-- File Info -->
+                <div class="card mt-3" id="file_info_card" style="display:none;">
+                    <div class="card-header">
+                        <h6><i class="fas fa-info-circle"></i> File Information</h6>
+                    </div>
+                    <div class="card-body">
+                        <div id="file_info_content"></div>
+                        <button type="button" class="btn btn-success w-100 mt-3" id="start_recovery_btn">
+                            <i class="fas fa-play"></i> Start Password Recovery
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5><i class="fas fa-cogs"></i> Recovery Options</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="password_hints" class="form-label">Password Hints (one per line):</label>
+                            <textarea class="form-control" id="password_hints" rows="4" 
+                                placeholder="Enter potential password components:&#10;john&#10;smith&#10;1990&#10;password"></textarea>
+                            <div class="form-text">Names, dates, words that might be in the password</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="max_length" class="form-label">Maximum Password Length:</label>
+                            <input type="number" class="form-control" id="max_length" value="20" min="1" max="50">
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="thread_count" class="form-label">Thread Count:</label>
+                            <input type="number" class="form-control" id="thread_count" value="4" min="1" max="16">
+                        </div>
+
+                        <div class="mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="use_patterns" checked>
+                                <label class="form-check-label" for="use_patterns">
+                                    Use common patterns (dates, combinations)
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="use_substitutions" checked>
+                                <label class="form-check-label" for="use_substitutions">
+                                    Use character substitutions (a→@, o→0, etc.)
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Progress Card -->
+                <div class="card mt-3" id="progress_card" style="display:none;">
+                    <div class="card-header">
+                        <h6><i class="fas fa-chart-line"></i> Recovery Progress</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <div class="d-flex justify-content-between">
+                                <span>Progress:</span>
+                                <span id="progress_percent">0%</span>
+                            </div>
+                            <div class="progress">
+                                <div class="progress-bar" id="progress_bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-6">
+                                <small class="text-muted">Attempts:</small><br>
+                                <span id="attempts_count">0</span>
+                            </div>
+                            <div class="col-6">
+                                <small class="text-muted">Elapsed:</small><br>
+                                <span id="elapsed_time">00:00:00</span>
+                            </div>
+                        </div>
+
+                        <div class="mt-3">
+                            <small class="text-muted">ETA:</small><br>
+                            <span id="eta_time">Calculating...</span>
+                        </div>
+
+                        <div class="mt-3">
+                            <button type="button" class="btn btn-danger" id="stop_recovery_btn">
+                                <i class="fas fa-stop"></i> Stop Recovery
+                            </button>
+                        </div>
+
+                        <!-- Success Alert -->
+                        <div class="alert alert-success mt-3" id="success_alert" style="display:none;">
+                            <h6><i class="fas fa-check-circle"></i> Password Found!</h6>
+                            <p class="mb-0">Password: <strong id="found_password"></strong></p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Log Output -->
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="card" id="log_card" style="display:none;">
+                    <div class="card-header">
+                        <h6><i class="fas fa-list"></i> Recovery Log</h6>
+                    </div>
+                    <div class="card-body">
+                        <div id="log_output" style="height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.9em;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let currentSessionId = null;
+        let statusInterval = null;
+
+        // Recovery type selection
+        document.querySelectorAll('input[name="recovery_type"]').forEach(radio => {
+            radio.addEventListener('change', function() {
+                if (this.value === 'veracrypt') {
+                    document.getElementById('veracrypt_options').style.display = 'block';
+                    document.getElementById('veracrypt_help').style.display = 'inline';
+                    document.getElementById('keepass_help').style.display = 'none';
+                } else {
+                    document.getElementById('veracrypt_options').style.display = 'none';
+                    document.getElementById('veracrypt_help').style.display = 'none';
+                    document.getElementById('keepass_help').style.display = 'inline';
+                }
+            });
+        });
+
+        // Upload file
+        document.getElementById('upload_btn').addEventListener('click', function() {
+            const formData = new FormData();
+            const fileInput = document.getElementById('file_upload');
+            const hashData = document.getElementById('hash_data').value;
+            const partitionData = document.getElementById('partition_data').value;
+
+            if (fileInput.files.length > 0) {
+                formData.append('file', fileInput.files[0]);
+            } else if (hashData.trim()) {
+                formData.append('hash_data', hashData.trim());
+                if (partitionData.trim()) {
+                    formData.append('partition_data', partitionData.trim());
+                }
+            } else {
+                alert('Please select a file or enter hash data');
+                return;
+            }
+
+            this.disabled = true;
+            this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Analyzing...';
+
+            fetch('/api/upload', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    currentSessionId = data.session_id;
+                    displayFileInfo(data.file_info);
+                    document.getElementById('file_info_card').style.display = 'block';
+                }
+            })
+            .catch(error => {
+                alert('Upload failed: ' + error.message);
+            })
+            .finally(() => {
+                this.disabled = false;
+                this.innerHTML = '<i class="fas fa-upload"></i> Analyze File';
+            });
+        });
+
+        // Start recovery
+        document.getElementById('start_recovery_btn').addEventListener('click', function() {
+            const passwordHints = document.getElementById('password_hints').value
+                .split('\n').filter(line => line.trim()).map(line => line.trim());
+            
+            const options = {
+                session_id: currentSessionId,
+                password_hints: passwordHints,
+                max_length: parseInt(document.getElementById('max_length').value),
+                thread_count: parseInt(document.getElementById('thread_count').value),
+                use_patterns: document.getElementById('use_patterns').checked,
+                use_substitutions: document.getElementById('use_substitutions').checked
+            };
+
+            fetch('/api/start_recovery', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(options)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert('Error: ' + data.error);
+                } else {
+                    document.getElementById('progress_card').style.display = 'block';
+                    document.getElementById('log_card').style.display = 'block';
+                    startStatusPolling();
+                }
+            })
+            .catch(error => alert('Start failed: ' + error.message));
+        });
+
+        // Stop recovery
+        document.getElementById('stop_recovery_btn').addEventListener('click', function() {
+            fetch(`/api/stop_recovery/${currentSessionId}`, {method: 'POST'})
+            .then(response => response.json())
+            .then(data => {
+                if (statusInterval) {
+                    clearInterval(statusInterval);
+                    statusInterval = null;
+                }
+            });
+        });
+
+        function displayFileInfo(info) {
+            const content = `
+                <p><strong>Type:</strong> ${info.type.toUpperCase()}</p>
+                <p><strong>File:</strong> ${info.name}</p>
+                <p><strong>Size:</strong> ${(info.size / 1024).toFixed(1)} KB</p>
+            `;
+            document.getElementById('file_info_content').innerHTML = content;
+        }
+
+        function startStatusPolling() {
+            statusInterval = setInterval(() => {
+                fetch(`/api/session_status/${currentSessionId}`)
+                .then(response => response.json())
+                .then(data => {
+                    updateProgress(data);
+                    updateLog(data.log_messages);
+                    
+                    if (data.status === 'success' || data.status === 'completed' || data.status === 'error') {
+                        clearInterval(statusInterval);
+                        statusInterval = null;
+                        
+                        if (data.status === 'success') {
+                            document.getElementById('found_password').textContent = data.found_password;
+                            document.getElementById('success_alert').style.display = 'block';
+                        }
+                    }
+                });
+            }, 2000);
+        }
+
+        function updateProgress(data) {
+            document.getElementById('progress_percent').textContent = data.progress.toFixed(1) + '%';
+            document.getElementById('progress_bar').style.width = data.progress + '%';
+            document.getElementById('attempts_count').textContent = data.attempts.toLocaleString();
+            
+            if (data.elapsed_time) {
+                document.getElementById('elapsed_time').textContent = formatTime(data.elapsed_time);
+            }
+            
+            if (data.eta && data.eta > 0) {
+                document.getElementById('eta_time').textContent = formatTime(data.eta);
+            }
+        }
+
+        function updateLog(messages) {
+            const logOutput = document.getElementById('log_output');
+            logOutput.innerHTML = messages.map(msg => `<div>${msg}</div>`).join('');
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }
+
+        function formatTime(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+    </script>
+</body>
+</html>
