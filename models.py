@@ -13,6 +13,7 @@ Base = declarative_base()
 
 class RecoveryStatus(Enum):
     """Recovery session status"""
+    READY = "ready"
     PENDING = "pending"
     RUNNING = "running" 
     SUCCESS = "success"
@@ -52,7 +53,7 @@ class RecoverySession(Base):
     thread_count = Column(Integer, default=4)
     
     # Recovery state
-    status = Column(SQLEnum(RecoveryStatus), default=RecoveryStatus.PENDING)
+    status = Column(SQLEnum(RecoveryStatus), default=RecoveryStatus.READY)
     progress = Column(Float, default=0.0)
     attempts = Column(Integer, default=0)
     total_keyspace = Column(String(50))  # Store as string for very large numbers

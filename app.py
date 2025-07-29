@@ -389,7 +389,26 @@ def run_recovery(session_id, password_hints, dictionary_file, max_length,
                 (brute_force_min_length, brute_force_max_length)
             )
             
-            session['log_messages'].append(f'Total keyspace: {bf_gen.total_keyspace:,} passwords')
+            keyspace = bf_gen.total_keyspace
+            session['log_messages'].append(f'Total keyspace: {keyspace:,} passwords')
+            
+            # Add more reasonable limits for VeraCrypt  
+            if keyspace > 1e12:  # More than 1 trillion
+                session['log_messages'].append('WARNING: Very large keyspace detected!')
+                if session['file_info']['type'] == 'veracrypt':
+                    # For VeraCrypt, limit to more reasonable ranges
+                    if brute_force_max_length > 8:
+                        brute_force_max_length = 8
+                        session['brute_force_max_length'] = 8
+                        session['log_messages'].append('Limiting VeraCrypt max length to 8 characters for practical recovery.')
+                        # Recreate generator with reduced length
+                        bf_gen = create_optimized_generator(
+                            charset_info, 
+                            (brute_force_min_length, brute_force_max_length)
+                        )
+                        session['log_messages'].append(f'Reduced keyspace: {bf_gen.total_keyspace:,} passwords')
+                
+                session['log_messages'].append('Consider reducing the length range or character set for faster results.')
             
             if use_gpu and HAS_GPU_SUPPORT:
                 session['log_messages'].append('Attempting GPU acceleration...')
@@ -689,6 +708,117 @@ def get_stats():
             'recent_sessions': recent_sessions,
             'database_available': True
         })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/download')
+def download_package():
+    """Create and download a complete package of the tool"""
+    try:
+        import zipfile
+        import io
+        
+        # Create a zip file in memory
+        zip_buffer = io.BytesIO()
+        
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Add main files
+            zip_file.write('app.py')
+            zip_file.write('cli.py')
+            zip_file.write('models.py')
+            
+            # Add core modules
+            for root, dirs, files in os.walk('core'):
+                for file in files:
+                    if file.endswith('.py'):
+                        file_path = os.path.join(root, file)
+                        zip_file.write(file_path)
+            
+            # Add templates and static files
+            for root, dirs, files in os.walk('templates'):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    zip_file.write(file_path)
+            
+            for root, dirs, files in os.walk('static'):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    zip_file.write(file_path)
+            
+            # Add README
+            readme_content = """# Unified Password Recovery Tool
+
+## Installation
+
+1. Install Python 3.7+
+2. Install dependencies:
+   ```bash
+   pip install flask pycryptodome pykeepass psutil sqlalchemy psycopg2-binary pyopencl
+   ```
+
+## Usage
+
+### Web Interface
+```bash
+python app.py
+```
+Access at http://localhost:5000
+
+### Command Line
+```bash
+python cli.py --help
+```
+
+## Features
+
+- VeraCrypt volume header recovery
+- KeePass database password recovery  
+- GPU-accelerated brute force (AMD/OpenCL)
+- Pure brute force (no wordlist dependency)
+- Session persistence with PostgreSQL
+- Advanced progress tracking and logging
+
+## Database Setup (Optional)
+
+Set DATABASE_URL environment variable for session persistence:
+```bash
+export DATABASE_URL="postgresql://user:password@localhost/recovery_db"
+```
+
+## GPU Support
+
+For AMD GPU acceleration:
+1. Install OpenCL drivers for your GPU
+2. Install PyOpenCL: `pip install pyopencl`
+3. Enable GPU mode in the web interface
+
+## Security Note
+
+This tool is designed for legitimate password recovery of your own files.
+Always ensure you have legal authorization before attempting password recovery.
+"""
+            zip_file.writestr('README.md', readme_content)
+            
+            # Add requirements file
+            requirements_content = """flask>=2.0.0
+pycryptodome>=3.15.0
+pykeepass>=4.0.0
+psutil>=5.8.0
+sqlalchemy>=1.4.0
+psycopg2-binary>=2.9.0
+pyopencl>=2021.2.0
+"""
+            zip_file.writestr('requirements.txt', requirements_content)
+        
+        zip_buffer.seek(0)
+        
+        return send_file(
+            io.BytesIO(zip_buffer.read()),
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name='password_recovery_tool.zip'
+        )
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
