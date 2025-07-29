@@ -823,9 +823,16 @@ pyopencl>=2021.2.0
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+def create_app():
+    """Application factory for deployment"""
+    return app
+
 if __name__ == '__main__':
     print("Starting Unified Password Recovery Tool...")
-    print("Access the web interface at: http://localhost:5000")
+    
+    # Use PORT environment variable for deployment compatibility
+    port = int(os.environ.get('PORT', 5000))
+    print(f"Access the web interface at: http://localhost:{port}")
     
     if HAS_GPU_SUPPORT:
         print("GPU acceleration support: Available")
@@ -842,4 +849,13 @@ if __name__ == '__main__':
     else:
         print("GPU acceleration support: Not available (install pyopencl)")
     
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Check if running in deployment mode
+    is_deployment = os.environ.get('DEPLOYMENT', 'false').lower() == 'true'
+    
+    if is_deployment:
+        # In deployment, use gunicorn
+        print("Running in deployment mode with gunicorn")
+        app.run(host='0.0.0.0', port=port, debug=False)
+    else:
+        # Development mode
+        app.run(host='0.0.0.0', port=port, debug=False)
