@@ -2,7 +2,7 @@ modules = ["python-3.11"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["gmp"]
+packages = ["gmp", "mesa_drivers", "ocl-icd", "opencl-headers"]
 
 [workflows]
 runButton = "Project"

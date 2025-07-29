@@ -128,3 +128,43 @@ Preferred communication style: Simple, everyday language.
    - **Problem**: Secure handling of sensitive uploaded files
    - **Solution**: Temporary directories with automatic cleanup
    - **Benefits**: Security, disk space management, session isolation
+
+## Recent Changes: Latest modifications with dates
+
+### July 29, 2025 - GPU-Accelerated Brute Force Implementation
+- **Added GPU acceleration** via PyOpenCL for AMD GPUs
+- **Implemented dedicated brute force module** with character set optimization
+- **Enhanced web interface** with brute force configuration options
+- **Added time estimation** and GPU performance benchmarking
+- **Optimized for very long passwords** (90+ characters as requested)
+- **Added safety measures** for large keyspace calculations
+- **Integrated CPU/GPU fallback** system for maximum compatibility
+
+## User Requirements Addressed
+- **Brute force capability** for both VeraCrypt and KeePass
+- **GPU acceleration** specifically for AMD hardware
+- **Support for 90+ character passwords** for KeePass databases
+- **Safety considerations** to prevent system overload
+- **No wordlist dependency** - pure brute force approach
+
+## New Technical Components Added
+
+### GPU Brute Force Module (`core/gpu_bruteforce.py`)
+- OpenCL integration for AMD GPU acceleration
+- Batch processing for efficient GPU utilization
+- Automatic fallback to CPU when GPU unavailable
+- Performance benchmarking and device detection
+
+### Advanced Brute Force Generator (`core/bruteforce_generator.py`)
+- Optimized for very long password sequences
+- Character set analysis and optimization
+- Incremental length-based generation
+- Time estimation calculations
+- Pattern-based generation for efficiency
+
+### Enhanced Web Interface
+- Brute force configuration panel
+- GPU acceleration toggle
+- Time estimation tools
+- Real-time progress tracking for GPU operations
+- Character set customization for targeted attacks

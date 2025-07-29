@@ -18,6 +18,12 @@ from core.keepass_handler import KeePassHandler
 from core.password_generator import PasswordGenerator
 from core.session_manager import SessionManager
 from core.utils import detect_file_type, format_time, setup_logging
+from core.bruteforce_generator import BruteForceGenerator, OptimizedCharsetAnalyzer, create_optimized_generator
+try:
+    from core.gpu_bruteforce import GPUBruteForcer, SmartBruteForcer, get_gpu_info, test_gpu_performance
+    HAS_GPU_SUPPORT = True
+except ImportError:
+    HAS_GPU_SUPPORT = False
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -134,17 +140,27 @@ def start_recovery():
         use_substitutions = data.get('use_substitutions', True)
         thread_count = data.get('thread_count', 4)
         
+        # New brute force parameters
+        use_brute_force = data.get('use_brute_force', False)
+        brute_force_charset = data.get('brute_force_charset', '')
+        brute_force_min_length = data.get('brute_force_min_length', 1)
+        brute_force_max_length = data.get('brute_force_max_length', 20)
+        use_gpu = data.get('use_gpu', False)
+        
         # Update session
         session['status'] = 'running'
         session['start_time'] = datetime.now()
         session['progress'] = 0
         session['attempts'] = 0
+        session['use_brute_force'] = use_brute_force
+        session['use_gpu'] = use_gpu
         
         # Start recovery in background thread
         recovery_thread = threading.Thread(
             target=run_recovery,
             args=(session_id, password_hints, dictionary_file, max_length, 
-                  use_patterns, use_substitutions, thread_count)
+                  use_patterns, use_substitutions, thread_count, use_brute_force,
+                  brute_force_charset, brute_force_min_length, brute_force_max_length, use_gpu)
         )
         recovery_thread.daemon = True
         recovery_thread.start()
@@ -205,20 +221,12 @@ def stop_recovery(session_id):
         return jsonify({'error': str(e)}), 500
 
 def run_recovery(session_id, password_hints, dictionary_file, max_length, 
-                use_patterns, use_substitutions, thread_count):
+                use_patterns, use_substitutions, thread_count, use_brute_force=False,
+                brute_force_charset='', brute_force_min_length=1, brute_force_max_length=20, use_gpu=False):
     """Run password recovery in background thread"""
     try:
         session = active_sessions[session_id]
         file_info = session['file_info']
-        
-        # Initialize password generator
-        password_gen = PasswordGenerator(
-            hints=password_hints,
-            dictionary_file=dictionary_file,
-            max_length=max_length,
-            use_patterns=use_patterns,
-            use_substitutions=use_substitutions
-        )
         
         # Initialize appropriate handler
         if file_info['type'] == 'veracrypt':
@@ -233,39 +241,155 @@ def run_recovery(session_id, password_hints, dictionary_file, max_length,
             session['log_messages'].append('Unsupported file type')
             return
         
-        # Generate password list
-        session['log_messages'].append('Generating password candidates...')
-        passwords = list(password_gen.generate_passwords())
-        total_passwords = len(passwords)
-        
-        session['log_messages'].append(f'Generated {total_passwords} password candidates')
-        
-        # Test passwords
-        found = False
-        for i, password in enumerate(passwords):
-            if session['status'] != 'running':
-                break
+        # Choose generation strategy based on parameters
+        if use_brute_force:
+            session['log_messages'].append('Using brute force mode...')
+            session['log_messages'].append(f'Charset: {brute_force_charset or "default alphanumeric"}')
+            session['log_messages'].append(f'Length range: {brute_force_min_length}-{brute_force_max_length}')
             
-            session['attempts'] += 1
-            session['progress'] = (i / total_passwords) * 100
+            # Initialize brute force generator
+            charset_info = {
+                'known_chars': brute_force_charset if brute_force_charset else None
+            }
             
-            if i % 100 == 0:
-                session['log_messages'].append(f'Tested {i}/{total_passwords} passwords...')
+            bf_gen = create_optimized_generator(
+                charset_info, 
+                (brute_force_min_length, brute_force_max_length)
+            )
             
-            try:
-                if handler.test_password(password):
-                    session['found_password'] = password
-                    session['status'] = 'success'
-                    session['log_messages'].append(f'SUCCESS! Password found: {password}')
-                    found = True
+            session['log_messages'].append(f'Total keyspace: {bf_gen.total_keyspace:,} passwords')
+            
+            if use_gpu and HAS_GPU_SUPPORT:
+                session['log_messages'].append('Attempting GPU acceleration...')
+                try:
+                    smart_bf = SmartBruteForcer(handler, brute_force_charset)
+                    gpu_bf = smart_bf.create_gpu_bruteforcer(
+                        brute_force_charset or bf_gen.charset, 
+                        brute_force_min_length, 
+                        brute_force_max_length
+                    )
+                    
+                    session['log_messages'].append('GPU initialization successful')
+                    
+                    # GPU brute force with progress tracking
+                    def progress_callback(tested, rate, elapsed):
+                        session['attempts'] = tested
+                        progress = min((tested / bf_gen.total_keyspace) * 100, 99.9) if bf_gen.total_keyspace > 0 else 0
+                        session['progress'] = progress
+                        session['log_messages'].append(f'GPU: {tested:,} tested, {rate:.0f}/sec, {progress:.2f}%')
+                    
+                    import threading
+                    stop_event = threading.Event()
+                    
+                    def check_stop():
+                        while session['status'] == 'running':
+                            time.sleep(1)
+                        stop_event.set()
+                    
+                    stop_thread = threading.Thread(target=check_stop)
+                    stop_thread.daemon = True
+                    stop_thread.start()
+                    
+                    found_password = gpu_bf.run_brute_force(progress_callback, stop_event)
+                    
+                    if found_password:
+                        session['found_password'] = found_password
+                        session['status'] = 'success'
+                        session['log_messages'].append(f'SUCCESS! Password found: {found_password}')
+                        session['progress'] = 100
+                        return
+                        
+                except Exception as e:
+                    session['log_messages'].append(f'GPU acceleration failed: {str(e)}')
+                    session['log_messages'].append('Falling back to CPU brute force...')
+            
+            # CPU brute force
+            session['log_messages'].append('Running CPU brute force...')
+            total_tested = 0
+            found = False
+            
+            for length, batch in bf_gen.generate_incremental(batch_size=1000):
+                if session['status'] != 'running':
                     break
-            except Exception as e:
-                if i % 1000 == 0:  # Log errors occasionally
-                    session['log_messages'].append(f'Error testing password: {str(e)}')
+                
+                session['log_messages'].append(f'Testing length {length}...')
+                
+                for password in batch:
+                    if session['status'] != 'running':
+                        break
+                    
+                    total_tested += 1
+                    session['attempts'] = total_tested
+                    
+                    try:
+                        if handler.test_password(password):
+                            session['found_password'] = password
+                            session['status'] = 'success'
+                            session['log_messages'].append(f'SUCCESS! Password found: {password}')
+                            found = True
+                            break
+                    except Exception as e:
+                        if total_tested % 10000 == 0:
+                            session['log_messages'].append(f'Error testing password: {str(e)}')
+                    
+                    # Update progress
+                    if total_tested % 10000 == 0:
+                        progress = min((total_tested / bf_gen.total_keyspace) * 100, 99.9) if bf_gen.total_keyspace > 0 else 0
+                        session['progress'] = progress
+                        session['log_messages'].append(f'CPU: Length {length}, tested {total_tested:,}, {progress:.3f}%')
+                
+                if found:
+                    break
+            
+            if not found and session['status'] == 'running':
+                session['status'] = 'completed'
+                session['log_messages'].append('Brute force completed - no match found')
         
-        if not found and session['status'] == 'running':
-            session['status'] = 'completed'
-            session['log_messages'].append('Password recovery completed - no match found')
+        else:
+            # Original hint-based password generation
+            session['log_messages'].append('Using hint-based password generation...')
+            
+            password_gen = PasswordGenerator(
+                hints=password_hints,
+                dictionary_file=dictionary_file,
+                max_length=max_length,
+                use_patterns=use_patterns,
+                use_substitutions=use_substitutions
+            )
+            
+            # Generate password list
+            session['log_messages'].append('Generating password candidates...')
+            passwords = list(password_gen.generate_passwords())
+            total_passwords = len(passwords)
+            
+            session['log_messages'].append(f'Generated {total_passwords} password candidates')
+            
+            # Test passwords
+            found = False
+            for i, password in enumerate(passwords):
+                if session['status'] != 'running':
+                    break
+                
+                session['attempts'] += 1
+                session['progress'] = (i / total_passwords) * 100 if total_passwords > 0 else 0
+                
+                if i % 100 == 0:
+                    session['log_messages'].append(f'Tested {i}/{total_passwords} passwords...')
+                
+                try:
+                    if handler.test_password(password):
+                        session['found_password'] = password
+                        session['status'] = 'success'
+                        session['log_messages'].append(f'SUCCESS! Password found: {password}')
+                        found = True
+                        break
+                except Exception as e:
+                    if i % 1000 == 0:  # Log errors occasionally
+                        session['log_messages'].append(f'Error testing password: {str(e)}')
+            
+            if not found and session['status'] == 'running':
+                session['status'] = 'completed'
+                session['log_messages'].append('Password recovery completed - no match found')
         
         session['progress'] = 100
         
@@ -274,7 +398,78 @@ def run_recovery(session_id, password_hints, dictionary_file, max_length,
         session['status'] = 'error'
         session['log_messages'].append(f'Error: {str(e)}')
 
+# GPU and system info endpoints
+@app.route('/api/gpu_info')
+def gpu_info():
+    """Get GPU information"""
+    try:
+        if HAS_GPU_SUPPORT:
+            info = get_gpu_info()
+        else:
+            info = {'error': 'GPU support not available'}
+        return jsonify(info)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/gpu_benchmark')
+def gpu_benchmark():
+    """Run GPU performance benchmark"""
+    try:
+        if HAS_GPU_SUPPORT:
+            result = test_gpu_performance()
+        else:
+            result = {'error': 'GPU support not available'}
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/estimate_time', methods=['POST'])
+def estimate_time():
+    """Estimate brute force time requirements"""
+    try:
+        data = request.get_json()
+        charset = data.get('charset', '')
+        min_length = data.get('min_length', 1)
+        max_length = data.get('max_length', 20)
+        
+        if not charset:
+            analyzer = OptimizedCharsetAnalyzer()
+            _, charset = analyzer.suggest_charset()
+        
+        bf_gen = BruteForceGenerator(charset, min_length, max_length)
+        
+        # Estimate with different rates
+        estimates = {}
+        for rate_name, rate in [('cpu_single', 1000), ('cpu_multi', 5000), ('gpu_estimate', 50000)]:
+            estimates[rate_name] = bf_gen.estimate_time(rate)
+        
+        return jsonify({
+            'charset': charset,
+            'charset_size': len(charset),
+            'total_keyspace': bf_gen.total_keyspace,
+            'estimates': estimates
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     print("Starting Unified Password Recovery Tool...")
     print("Access the web interface at: http://localhost:5000")
+    
+    if HAS_GPU_SUPPORT:
+        print("GPU acceleration support: Available")
+        try:
+            gpu_info_result = get_gpu_info()
+            if gpu_info_result.get('devices'):
+                print(f"Detected {len(gpu_info_result['devices'])} GPU device(s)")
+                for device in gpu_info_result['devices']:
+                    print(f"  - {device['name']} ({device['type']})")
+            else:
+                print("No GPU devices detected")
+        except Exception as e:
+            print(f"GPU detection error: {str(e)}")
+    else:
+        print("GPU acceleration support: Not available (install pyopencl)")
+    
     app.run(host='0.0.0.0', port=5000, debug=False)
