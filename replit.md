@@ -168,3 +168,18 @@ Preferred communication style: Simple, everyday language.
 - Time estimation tools
 - Real-time progress tracking for GPU operations
 - Character set customization for targeted attacks
+
+### Database Integration (`models.py`)
+- PostgreSQL database for session persistence
+- Recovery session tracking with full parameter storage
+- Detailed logging system for debugging and analysis
+- GPU performance benchmarking history
+- Statistics and analytics endpoints
+- Resume capability for long-running operations
+
+### New Database Features
+- **Session Management**: Complete session state persistence
+- **Performance Logging**: Track password testing rates and progress
+- **GPU Benchmarking**: Store and compare GPU performance results
+- **Analytics**: Success rates, session statistics, and usage patterns
+- **API Endpoints**: RESTful access to session data and logs

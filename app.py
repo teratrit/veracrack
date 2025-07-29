@@ -9,7 +9,7 @@ import os
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 import tempfile
 import base64
 
@@ -25,14 +25,128 @@ try:
 except ImportError:
     HAS_GPU_SUPPORT = False
 
+# Database imports
+from sqlalchemy import create_engine, func
+from sqlalchemy.orm import sessionmaker, scoped_session
+from models import Base, RecoverySession, RecoveryLog, GPUPerformance, RecoveryStatus, FileType
+
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
+
+# Database setup
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if DATABASE_URL:
+    engine = create_engine(DATABASE_URL, echo=False)
+    Base.metadata.create_all(engine)
+    SessionLocal = scoped_session(sessionmaker(bind=engine))
+    HAS_DATABASE = True
+    logger = setup_logging()
+    logger.info("Database connection established")
+else:
+    HAS_DATABASE = False
+    logger = setup_logging()
+    logger.warning("No database connection - using memory-only sessions")
 
 # Global variables for session management
 active_sessions = {}
 session_lock = threading.Lock()
 
-logger = setup_logging()
+# Database helper functions
+def save_session_to_db(session_data):
+    """Save session to database"""
+    if not HAS_DATABASE:
+        return
+    
+    try:
+        db_session = SessionLocal()
+        
+        # Convert session data to database model
+        recovery_session = RecoverySession(
+            session_id=session_data['session_id'],
+            file_type=FileType.VERACRYPT if session_data['file_info']['type'] == 'veracrypt' else FileType.KEEPASS,
+            file_path=session_data['file_info']['path'],
+            file_size=session_data['file_info'].get('size', 0),
+            partition_data=session_data['file_info'].get('partition_data'),
+            use_brute_force=session_data.get('use_brute_force', False),
+            brute_force_charset=session_data.get('brute_force_charset'),
+            brute_force_min_length=session_data.get('brute_force_min_length', 1),
+            brute_force_max_length=session_data.get('brute_force_max_length', 20),
+            use_gpu=session_data.get('use_gpu', False),
+            max_length=session_data.get('max_length', 20),
+            use_patterns=session_data.get('use_patterns', True),
+            use_substitutions=session_data.get('use_substitutions', True),
+            thread_count=session_data.get('thread_count', 4),
+            status=RecoveryStatus(session_data['status']),
+            progress=session_data.get('progress', 0.0),
+            attempts=session_data.get('attempts', 0),
+            total_keyspace=str(session_data.get('total_keyspace', '0')),
+            found_password=session_data.get('found_password'),
+            started_at=session_data.get('start_time'),
+            password_hints=session_data.get('password_hints', []),
+            log_messages=session_data.get('log_messages', [])
+        )
+        
+        # Check if session exists
+        existing = db_session.query(RecoverySession).filter_by(session_id=session_data['session_id']).first()
+        if existing:
+            # Update existing session
+            for key, value in {
+                'status': RecoveryStatus(session_data['status']),
+                'progress': session_data.get('progress', 0.0),
+                'attempts': session_data.get('attempts', 0),
+                'found_password': session_data.get('found_password'),
+                'log_messages': session_data.get('log_messages', [])
+            }.items():
+                setattr(existing, key, value)
+        else:
+            db_session.add(recovery_session)
+        
+        db_session.commit()
+        db_session.close()
+    except Exception as e:
+        logger.error(f"Database save error: {str(e)}")
+
+def log_to_db(session_id, message, level='INFO', passwords_tested=None, test_rate=None, current_length=None):
+    """Log message to database"""
+    if not HAS_DATABASE:
+        return
+    
+    try:
+        db_session = SessionLocal()
+        log_entry = RecoveryLog(
+            session_id=session_id,
+            level=level,
+            message=message,
+            passwords_tested=passwords_tested,
+            test_rate=test_rate,
+            current_length=current_length
+        )
+        db_session.add(log_entry)
+        db_session.commit()
+        db_session.close()
+    except Exception as e:
+        logger.error(f"Database log error: {str(e)}")
+
+def save_gpu_benchmark(benchmark_data):
+    """Save GPU benchmark to database"""
+    if not HAS_DATABASE:
+        return
+    
+    try:
+        db_session = SessionLocal()
+        gpu_perf = GPUPerformance(
+            device_name=benchmark_data.get('device_name'),
+            device_type=benchmark_data.get('device_type'),
+            platform_name=benchmark_data.get('platform_name'),
+            operations_per_second=benchmark_data.get('operations_per_second'),
+            estimated_password_rate=benchmark_data.get('estimated_password_rate'),
+            execution_time=benchmark_data.get('execution_time')
+        )
+        db_session.add(gpu_perf)
+        db_session.commit()
+        db_session.close()
+    except Exception as e:
+        logger.error(f"GPU benchmark save error: {str(e)}")
 
 @app.route('/')
 def index():
@@ -93,19 +207,24 @@ def upload_file():
             return jsonify({'error': 'No valid data provided'}), 400
         
         # Create session
+        session_data = {
+            'session_id': session_id,
+            'file_info': file_info,
+            'temp_dir': temp_dir,
+            'status': 'ready',
+            'progress': 0,
+            'attempts': 0,
+            'start_time': None,
+            'estimated_time': None,
+            'found_password': None,
+            'log_messages': []
+        }
+        
         with session_lock:
-            active_sessions[session_id] = {
-                'id': session_id,
-                'file_info': file_info,
-                'temp_dir': temp_dir,
-                'status': 'ready',
-                'progress': 0,
-                'attempts': 0,
-                'start_time': None,
-                'estimated_time': None,
-                'found_password': None,
-                'log_messages': []
-            }
+            active_sessions[session_id] = session_data
+        
+        # Save to database
+        save_session_to_db(session_data)
         
         return jsonify({
             'session_id': session_id,
@@ -147,13 +266,26 @@ def start_recovery():
         brute_force_max_length = data.get('brute_force_max_length', 20)
         use_gpu = data.get('use_gpu', False)
         
-        # Update session
-        session['status'] = 'running'
-        session['start_time'] = datetime.now()
-        session['progress'] = 0
-        session['attempts'] = 0
-        session['use_brute_force'] = use_brute_force
-        session['use_gpu'] = use_gpu
+        # Update session with parameters
+        session.update({
+            'status': 'running',
+            'start_time': datetime.now(),
+            'progress': 0,
+            'attempts': 0,
+            'use_brute_force': use_brute_force,
+            'brute_force_charset': brute_force_charset,
+            'brute_force_min_length': brute_force_min_length,
+            'brute_force_max_length': brute_force_max_length,
+            'use_gpu': use_gpu,
+            'max_length': max_length,
+            'use_patterns': use_patterns,
+            'use_substitutions': use_substitutions,
+            'thread_count': thread_count,
+            'password_hints': password_hints
+        })
+        
+        # Save updated session to database
+        save_session_to_db(session)
         
         # Start recovery in background thread
         recovery_thread = threading.Thread(
@@ -448,6 +580,114 @@ def estimate_time():
             'charset_size': len(charset),
             'total_keyspace': bf_gen.total_keyspace,
             'estimates': estimates
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# Database endpoints
+@app.route('/api/sessions')
+def get_sessions():
+    """Get all recovery sessions from database"""
+    try:
+        if not HAS_DATABASE:
+            return jsonify({'error': 'Database not available'}), 503
+        
+        db_session = SessionLocal()
+        sessions = db_session.query(RecoverySession).order_by(RecoverySession.created_at.desc()).limit(50).all()
+        db_session.close()
+        
+        return jsonify([session.to_dict() for session in sessions])
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/sessions/<session_id>')
+def get_session_details(session_id):
+    """Get detailed session information"""
+    try:
+        if not HAS_DATABASE:
+            return jsonify({'error': 'Database not available'}), 503
+        
+        db_session = SessionLocal()
+        session = db_session.query(RecoverySession).filter_by(session_id=session_id).first()
+        
+        if not session:
+            db_session.close()
+            return jsonify({'error': 'Session not found'}), 404
+        
+        # Get logs for this session
+        logs = db_session.query(RecoveryLog).filter_by(session_id=session_id).order_by(RecoveryLog.timestamp.asc()).all()
+        db_session.close()
+        
+        result = session.to_dict()
+        result['logs'] = [log.to_dict() for log in logs]
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/sessions/<session_id>/logs')
+def get_session_logs(session_id):
+    """Get logs for a specific session"""
+    try:
+        if not HAS_DATABASE:
+            return jsonify({'error': 'Database not available'}), 503
+        
+        db_session = SessionLocal()
+        logs = db_session.query(RecoveryLog).filter_by(session_id=session_id).order_by(RecoveryLog.timestamp.asc()).all()
+        db_session.close()
+        
+        return jsonify([log.to_dict() for log in logs])
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/gpu_benchmarks')
+def get_gpu_benchmarks():
+    """Get GPU benchmark history"""
+    try:
+        if not HAS_DATABASE:
+            return jsonify({'error': 'Database not available'}), 503
+        
+        db_session = SessionLocal()
+        benchmarks = db_session.query(GPUPerformance).order_by(GPUPerformance.benchmark_date.desc()).limit(20).all()
+        db_session.close()
+        
+        return jsonify([benchmark.to_dict() for benchmark in benchmarks])
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/stats')
+def get_stats():
+    """Get database statistics"""
+    try:
+        if not HAS_DATABASE:
+            return jsonify({'error': 'Database not available'}), 503
+        
+        db_session = SessionLocal()
+        
+        # Get basic statistics
+        total_sessions = db_session.query(RecoverySession).count()
+        successful_sessions = db_session.query(RecoverySession).filter(RecoverySession.status == RecoveryStatus.SUCCESS).count()
+        active_sessions_count = db_session.query(RecoverySession).filter(RecoverySession.status == RecoveryStatus.RUNNING).count()
+        
+        # Get recent activity
+        recent_sessions = db_session.query(RecoverySession).filter(
+            RecoverySession.created_at >= datetime.now() - timedelta(days=7)
+        ).count()
+        
+        db_session.close()
+        
+        return jsonify({
+            'total_sessions': total_sessions,
+            'successful_sessions': successful_sessions,
+            'success_rate': (successful_sessions / total_sessions * 100) if total_sessions > 0 else 0,
+            'active_sessions': active_sessions_count,
+            'recent_sessions': recent_sessions,
+            'database_available': True
         })
         
     except Exception as e:
